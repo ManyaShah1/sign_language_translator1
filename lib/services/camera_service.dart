@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
@@ -35,14 +36,24 @@ class CameraService {
       imageFormatGroup: ImageFormatGroup.yuv420,
     );
 
-    // Initialize native MediaPipe HandLandmarker
+    // Initialize native MediaPipe HandLandmarker with robust GPU/CPU fallback
     try {
-      _handLandmarker = HandLandmarkerPlugin.create(
-        numHands: 1, // Only need 1 hand for single hand ASL translation kiosk
-        minHandDetectionConfidence: 0.5,
-        delegate: HandLandmarkerDelegate.GPU,
-      );
-      debugPrint("MediaPipe HandLandmarker initialized successfully.");
+      try {
+        _handLandmarker = HandLandmarkerPlugin.create(
+          numHands: 2, // Only need 1 hand for single hand ASL translation kiosk
+          minHandDetectionConfidence: 0.6, // Set slightly lower for better stream tracking
+          delegate: HandLandmarkerDelegate.GPU,
+        );
+        debugPrint("MediaPipe HandLandmarker initialized successfully with GPU delegate.");
+      } catch (gpuError) {
+        debugPrint("GPU Landmarker initialization failed: $gpuError. Falling back to CPU.");
+        _handLandmarker = HandLandmarkerPlugin.create(
+          numHands: 2,
+          minHandDetectionConfidence: 0.6,
+          delegate: HandLandmarkerDelegate.CPU,
+        );
+        debugPrint("MediaPipe HandLandmarker initialized successfully with CPU delegate.");
+      }
     } catch (e) {
       debugPrint("MediaPipe HandLandmarker initialization bypassed (unsupported platform): $e");
     }
@@ -71,10 +82,31 @@ class CameraService {
 
       if (hands.isNotEmpty) {
         final Hand hand = hands.first;
+        final lensDirection = controller?.description.lensDirection ?? CameraLensDirection.front;
+
         for (final Landmark landmark in hand.landmarks) {
+          // Translate coordinate system from raw sensor space to upright screen space.
+          // 1. Shift origin to center relative [-0.5, 0.5]
+          double nx = landmark.x - 0.5;
+          double ny = landmark.y - 0.5;
+
+          // 2. Rotate by sensorOrientation degrees (convert to radians)
+          double rad = sensorOrientation * math.pi / 180.0;
+          double rx = nx * math.cos(rad) - ny * math.sin(rad);
+          double ry = nx * math.sin(rad) + ny * math.cos(rad);
+
+          // 3. Mirror the horizontal axis for the front camera to match mirrored preview
+          if (lensDirection == CameraLensDirection.front) {
+            rx = -rx;
+          }
+
+          // 4. Shift origin back to [0.0, 1.0]
+          double finalX = rx + 0.5;
+          double finalY = ry + 0.5;
+
           extractedPoints.add({
-            "x": landmark.x,
-            "y": landmark.y,
+            "x": finalX,
+            "y": finalY,
             "z": landmark.z,
           });
         }

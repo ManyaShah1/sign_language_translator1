@@ -121,6 +121,8 @@ class WebSocketService {
       onPacketSent();
     } catch (e) {
       debugPrint("Error sending raw payload: $e");
+
+
     }
   }
 
@@ -132,4 +134,4 @@ class WebSocketService {
     isConnecting = false;
     onDisconnected(reason);
   }
-}
+}

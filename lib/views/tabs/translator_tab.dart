@@ -19,7 +19,7 @@ class TranslatorTab extends StatefulWidget {
 class _TranslatorTabState extends State<TranslatorTab> {
   late WebSocketService _webSocketService;
   final CameraService _cameraService = CameraService();
-  final TextEditingController serverIpController = TextEditingController(text: "ws://localhost:8768");
+  final TextEditingController serverIpController = TextEditingController(text: "ws://192.168.1.42:8768");
 
   TrackingMode _trackingMode = TrackingMode.mediaPipe;
   String _currentTranslation = "System ready. Press Connect and start signing.";
@@ -96,12 +96,12 @@ class _TranslatorTabState extends State<TranslatorTab> {
         final int sensorOrientation = _cameraService.controller!.description.sensorOrientation;
         final List<Map<String, double>> points = await _cameraService.processLiveFrame(image, sensorOrientation);
 
-        if (points.isNotEmpty) {
+        if (mounted && !_isDisposed) {
           setState(() {
             _simulatedHandPoints = points;
           });
 
-          if (_webSocketService.isConnected) {
+          if (points.isNotEmpty && _webSocketService.isConnected) {
             final int packetId = DateTime.now().millisecondsSinceEpoch;
             final payload = {
               "type": "coordinates",
@@ -120,6 +120,15 @@ class _TranslatorTabState extends State<TranslatorTab> {
     }
   }
 
+
+  void _clearTranslationBuffer() {
+    setState(() {
+      _currentTranslation = "";
+    });
+    if (_webSocketService.isConnected) {
+      _webSocketService.sendRawPayload({"type": "clear_buffer"});
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -141,14 +150,14 @@ class _TranslatorTabState extends State<TranslatorTab> {
               children: [
                 Expanded(flex: 5, child: CameraViewport(cameraService: _cameraService, trackingMode: _trackingMode, simulatedPoints: _simulatedHandPoints, fps: _fps, packetsSent: _webSocketService.packetsSent, isConnected: _webSocketService.isConnected, onPointerUpdated: (pos) {})),
                 const SizedBox(width: 24),
-                Expanded(flex: 4, child: TranslationPanel(currentTranslation: _currentTranslation, confidence: _confidence, status: _translationStatus, history: _translationHistory, latency: _webSocketService.serverLatency, fps: _fps, packetsSent: _webSocketService.packetsSent, packetsRecv: _webSocketService.packetsReceived, velocity: _velocity, onClear: () => setState(() => _currentTranslation = ""))),
+                Expanded(flex: 4, child: TranslationPanel(currentTranslation: _currentTranslation, confidence: _confidence, status: _translationStatus, history: _translationHistory, latency: _webSocketService.serverLatency, fps: _fps, packetsSent: _webSocketService.packetsSent, packetsRecv: _webSocketService.packetsReceived, velocity: _velocity, onClear: _clearTranslationBuffer)),
               ],
             )
                 : Column(
               children: [
                 CameraViewport(cameraService: _cameraService, trackingMode: _trackingMode, simulatedPoints: _simulatedHandPoints, fps: _fps, packetsSent: _webSocketService.packetsSent, isConnected: _webSocketService.isConnected, onPointerUpdated: (pos) {}),
                 const SizedBox(height: 24),
-                TranslationPanel(currentTranslation: _currentTranslation, confidence: _confidence, status: _translationStatus, history: _translationHistory, latency: _webSocketService.serverLatency, fps: _fps, packetsSent: _webSocketService.packetsSent, packetsRecv: _webSocketService.packetsReceived, velocity: _velocity, onClear: () => setState(() => _currentTranslation = "")),
+                TranslationPanel(currentTranslation: _currentTranslation, confidence: _confidence, status: _translationStatus, history: _translationHistory, latency: _webSocketService.serverLatency, fps: _fps, packetsSent: _webSocketService.packetsSent, packetsRecv: _webSocketService.packetsReceived, velocity: _velocity, onClear: _clearTranslationBuffer),
               ],
             );
           },
@@ -232,7 +241,7 @@ class _TranslatorTabState extends State<TranslatorTab> {
               decoration: InputDecoration(
                 labelText: "Local Inference Server Address",
                 labelStyle: const TextStyle(color: Color(0xff18b8b5)),
-                hintText: "ws://localhost:8768",
+                hintText: "ws://192.168.1.42:8768",
                 prefixIcon: const Icon(Icons.lan, color: Color(0xff18b8b5)),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(15),

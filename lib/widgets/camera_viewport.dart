@@ -49,7 +49,7 @@ class CameraViewport extends StatelessWidget {
             (cameraService.isInitialized && cameraService.controller != null)
                 ? CameraPreview(cameraService.controller!)
                 : _buildMockCameraFeedback(isDark),
-            if (isConnected) CustomPaint(painter: HandSkeletonPainter(points: simulatedPoints, isDark: isDark)),
+            if (simulatedPoints.isNotEmpty) CustomPaint(painter: HandSkeletonPainter(points: simulatedPoints, isDark: isDark)),
             Positioned(
               top: 16, left: 16,
               child: Container(
