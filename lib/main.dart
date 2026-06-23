@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter/services.dart';
-import 'package:hand_landmarker/hand_landmarker.dart';
+import 'hand_landmarker_stub.dart'
+    if (dart.library.io) 'package:hand_landmarker/hand_landmarker.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
