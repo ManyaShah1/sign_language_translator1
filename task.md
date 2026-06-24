@@ -1,0 +1,17 @@
+- [x] Create `node_server` directory and `package.json` file
+- [x] Implement `node_server/server.js` with Python subprocess management and WebSocket proxying
+- [x] Add `node_server/start.bat` to automate portable Node.js setup and start the server
+- [x] Create `node_server/README.md` with instructions
+- [x] Run the Node.js server to verify the setup
+- [x] Add MediaPipe Javascript library and tracking engine to `web/index.html`
+- [x] Create `lib/widgets/web_camera_helper_stub.dart`
+- [x] Create `lib/widgets/web_camera_helper_web.dart`
+- [x] Create `lib/widgets/web_camera_view.dart`
+- [x] Update `lib/widgets/camera_viewport.dart` to display `WebCameraView` on Web
+- [x] Update `lib/views/tabs/translator_tab.dart` to connect the Javascript callbacks to WebSocket stream
+- [x] Build and verify Web hand tracking works locally
+- [x] Integrate and verify ngrok secure tunnel configuration
+- [x] Deploy live frontend production bundle to Vercel
+- [x] Mirror X-axis coordinate on web client to match training dataset
+- [x] Add 1.3333 aspect-ratio correction on Python server
+- [x] Rebuild and redeploy updated client to Vercel

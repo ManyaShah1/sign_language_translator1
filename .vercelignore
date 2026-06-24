@@ -1,0 +1,21 @@
+# Ignore heavy root binary
+opencode.exe
+
+# Ignore server environments and modules
+node_modules
+python_server
+node_server
+.git
+.idea
+.dart_tool
+
+# Ignore non-web client platforms
+android
+ios
+windows
+macos
+linux
+
+# Ignore all builds except the release web bundle
+build/*
+!build/web/

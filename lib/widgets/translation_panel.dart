@@ -12,6 +12,8 @@ class TranslationPanel extends StatelessWidget {
   final int packetsRecv;
   final double velocity;
   final VoidCallback onClear;
+  final VoidCallback onBackspace;
+  final VoidCallback onSpace;
 
   const TranslationPanel({
     super.key,
@@ -25,6 +27,8 @@ class TranslationPanel extends StatelessWidget {
     required this.packetsRecv,
     required this.velocity,
     required this.onClear,
+    required this.onBackspace,
+    required this.onSpace,
   });
 
   @override
@@ -63,14 +67,40 @@ class TranslationPanel extends StatelessWidget {
                   Expanded(
                     child: OutlinedButton.icon(
                       onPressed: () => Clipboard.setData(ClipboardData(text: currentTranslation)),
-                      icon: const Icon(Icons.copy, size: 14),
-                      label: const Text("Copy"),
+                      icon: const Icon(Icons.copy, size: 12),
+                      label: const Text("Copy", style: TextStyle(fontSize: 12)),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(child: OutlinedButton.icon(onPressed: onClear, icon: const Icon(Icons.clear_all, size: 14), label: const Text("Clear"))),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onClear,
+                      icon: const Icon(Icons.clear_all, size: 12),
+                      label: const Text("Clear", style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
                 ],
-              )
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onSpace,
+                      icon: const Icon(Icons.space_bar, size: 12),
+                      label: const Text("Space", style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onBackspace,
+                      icon: const Icon(Icons.backspace_outlined, size: 12),
+                      label: const Text("Backspace", style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),

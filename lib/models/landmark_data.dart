@@ -1,4 +1,3 @@
-enum TrackingMode { simulator, cursor, cameraMotion, mediaPipe }
 
 class InferenceVitals {
   final int serverLatency;

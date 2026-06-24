@@ -1,7 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import '../../models/landmark_data.dart';
 import '../../services/websocket_service.dart';
 import '../../services/camera_service.dart';
 import '../../widgets/camera_viewport.dart';
@@ -21,7 +22,7 @@ class _TranslatorTabState extends State<TranslatorTab> {
   final CameraService _cameraService = CameraService();
   final TextEditingController serverIpController = TextEditingController(text: "ws://192.168.1.42:8768");
 
-  TrackingMode _trackingMode = TrackingMode.mediaPipe;
+
   String _currentTranslation = "System ready. Press Connect and start signing.";
   String _translationStatus = "Idle";
   double _confidence = 0.0;
@@ -77,6 +78,10 @@ class _TranslatorTabState extends State<TranslatorTab> {
   }
 
   void _initializeHardwareCamera() {
+    if (kIsWeb) {
+      // Bypassed on Web: JS MediaPipe will manage camera initialization directly
+      return;
+    }
     _cameraService.initialize(widget.cameras, () {
       setState(() {});
       _manageImageStreamingPipeline();
@@ -86,38 +91,31 @@ class _TranslatorTabState extends State<TranslatorTab> {
   void _manageImageStreamingPipeline() {
     if (_cameraService.controller == null || !_cameraService.isInitialized) return;
 
-    if (_trackingMode == TrackingMode.mediaPipe || _trackingMode == TrackingMode.cameraMotion) {
-      if (_isStreaming) return;
-      _isStreaming = true;
+    if (_isStreaming) return;
+    _isStreaming = true;
 
-      _cameraService.controller!.startImageStream((image) async {
-        if (_cameraService.isProcessingFrame) return;
+    _cameraService.controller!.startImageStream((image) async {
+      if (_cameraService.isProcessingFrame) return;
 
-        final int sensorOrientation = _cameraService.controller!.description.sensorOrientation;
-        final List<Map<String, double>> points = await _cameraService.processLiveFrame(image, sensorOrientation);
+      final int sensorOrientation = _cameraService.controller!.description.sensorOrientation;
+      final List<Map<String, double>> points = await _cameraService.processLiveFrame(image, sensorOrientation);
 
-        if (mounted && !_isDisposed) {
-          setState(() {
-            _simulatedHandPoints = points;
-          });
+      if (mounted && !_isDisposed) {
+        setState(() {
+          _simulatedHandPoints = points;
+        });
 
-          if (points.isNotEmpty && _webSocketService.isConnected) {
-            final int packetId = DateTime.now().millisecondsSinceEpoch;
-            final payload = {
-              "type": "coordinates",
-              "timestamp": packetId,
-              "landmarks": points,
-            };
-            _webSocketService.sendRawPayload(payload);
-          }
+        if (points.isNotEmpty && _webSocketService.isConnected) {
+          final int packetId = DateTime.now().millisecondsSinceEpoch;
+          final payload = {
+            "type": "coordinates",
+            "timestamp": packetId,
+            "landmarks": points,
+          };
+          _webSocketService.sendRawPayload(payload);
         }
-      });
-    } else {
-      if (_isStreaming) {
-        _cameraService.controller!.stopImageStream();
-        _isStreaming = false;
       }
-    }
+    });
   }
 
 
@@ -127,6 +125,18 @@ class _TranslatorTabState extends State<TranslatorTab> {
     });
     if (_webSocketService.isConnected) {
       _webSocketService.sendRawPayload({"type": "clear_buffer"});
+    }
+  }
+
+  void _backspaceTranslationBuffer() {
+    if (_webSocketService.isConnected) {
+      _webSocketService.sendRawPayload({"type": "backspace"});
+    }
+  }
+
+  void _spaceTranslationBuffer() {
+    if (_webSocketService.isConnected) {
+      _webSocketService.sendRawPayload({"type": "space"});
     }
   }
 
@@ -148,16 +158,16 @@ class _TranslatorTabState extends State<TranslatorTab> {
                 ? Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(flex: 5, child: CameraViewport(cameraService: _cameraService, trackingMode: _trackingMode, simulatedPoints: _simulatedHandPoints, fps: _fps, packetsSent: _webSocketService.packetsSent, isConnected: _webSocketService.isConnected, onPointerUpdated: (pos) {})),
+                Expanded(flex: 5, child: CameraViewport(cameraService: _cameraService, simulatedPoints: _simulatedHandPoints, fps: _fps, packetsSent: _webSocketService.packetsSent, isConnected: _webSocketService.isConnected, onWebLandmarks: _handleWebLandmarks)),
                 const SizedBox(width: 24),
-                Expanded(flex: 4, child: TranslationPanel(currentTranslation: _currentTranslation, confidence: _confidence, status: _translationStatus, history: _translationHistory, latency: _webSocketService.serverLatency, fps: _fps, packetsSent: _webSocketService.packetsSent, packetsRecv: _webSocketService.packetsReceived, velocity: _velocity, onClear: _clearTranslationBuffer)),
+                Expanded(flex: 4, child: TranslationPanel(currentTranslation: _currentTranslation, confidence: _confidence, status: _translationStatus, history: _translationHistory, latency: _webSocketService.serverLatency, fps: _fps, packetsSent: _webSocketService.packetsSent, packetsRecv: _webSocketService.packetsReceived, velocity: _velocity, onClear: _clearTranslationBuffer, onBackspace: _backspaceTranslationBuffer, onSpace: _spaceTranslationBuffer)),
               ],
             )
                 : Column(
               children: [
-                CameraViewport(cameraService: _cameraService, trackingMode: _trackingMode, simulatedPoints: _simulatedHandPoints, fps: _fps, packetsSent: _webSocketService.packetsSent, isConnected: _webSocketService.isConnected, onPointerUpdated: (pos) {}),
+                CameraViewport(cameraService: _cameraService, simulatedPoints: _simulatedHandPoints, fps: _fps, packetsSent: _webSocketService.packetsSent, isConnected: _webSocketService.isConnected, onWebLandmarks: _handleWebLandmarks),
                 const SizedBox(height: 24),
-                TranslationPanel(currentTranslation: _currentTranslation, confidence: _confidence, status: _translationStatus, history: _translationHistory, latency: _webSocketService.serverLatency, fps: _fps, packetsSent: _webSocketService.packetsSent, packetsRecv: _webSocketService.packetsReceived, velocity: _velocity, onClear: _clearTranslationBuffer),
+                TranslationPanel(currentTranslation: _currentTranslation, confidence: _confidence, status: _translationStatus, history: _translationHistory, latency: _webSocketService.serverLatency, fps: _fps, packetsSent: _webSocketService.packetsSent, packetsRecv: _webSocketService.packetsReceived, velocity: _velocity, onClear: _clearTranslationBuffer, onBackspace: _backspaceTranslationBuffer, onSpace: _spaceTranslationBuffer),
               ],
             );
           },
@@ -212,7 +222,7 @@ class _TranslatorTabState extends State<TranslatorTab> {
           const Text(
             "Extract arm/hand skeleton coordinate arrays locally, then stream them to a local server to translate continuous ASL sentences. No cloud latency, no subscription bills, no limits.",
             style: TextStyle(
-              color: const Color(0xffddf5f4),
+              color: Color(0xffddf5f4),
               fontSize: 14,
               fontWeight: FontWeight.w300,
             ),
@@ -294,6 +304,46 @@ class _TranslatorTabState extends State<TranslatorTab> {
     );
   }
 
+  void _handleWebLandmarks(String jsonLandmarks) {
+    if (!mounted || _isDisposed) return;
+    try {
+      final dynamic decoded = json.decode(jsonLandmarks);
+      
+      // Check for webcam errors returned by JS MediaPipe client
+      if (decoded is Map && decoded.containsKey("error")) {
+        setState(() {
+          _currentTranslation = "Webcam Error: ${decoded["message"] ?? "Access denied"}";
+          _translationStatus = "Error";
+        });
+        return;
+      }
+      
+      final List<dynamic> landmarkList = decoded as List<dynamic>;
+      final List<Map<String, double>> points = landmarkList.map((item) {
+        return {
+          "x": (item["x"] as num).toDouble(),
+          "y": (item["y"] as num).toDouble(),
+          "z": (item["z"] as num).toDouble(),
+        };
+      }).toList();
+
+      setState(() {
+        _fpsCount++;
+      });
+
+      if (points.isNotEmpty && _webSocketService.isConnected) {
+        final int packetId = DateTime.now().millisecondsSinceEpoch;
+        final payload = {
+          "type": "coordinates",
+          "timestamp": packetId,
+          "landmarks": points,
+        };
+        _webSocketService.sendRawPayload(payload);
+      }
+    } catch (e) {
+      debugPrint("Error parsing web landmarks: $e");
+    }
+  }
 
   @override
   void dispose() {

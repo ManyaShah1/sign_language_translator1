@@ -43,3 +43,25 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+.vercel
+
+# Swayam Health local backend exclusions
+**/node_modules/
+node_server/portable_node/
+python_server/portable_python/
+python_server/extracted_redist/
+python_server/vc_redist.x64.exe
+python_server/hand_landmarker.task
+python_server/dataset.csv
+python_server/isl_model_advanced.pkl
+python_server/isl_model_advanced.tflite
+python_server/raw_landmarks.json
+python_server/__pycache__/
+*.pkl
+*.tflite
+*.task
+
+# Environment variables
+.env
+.env.*
+node_server/.env

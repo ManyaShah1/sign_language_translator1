@@ -1,0 +1,19 @@
+{
+  "name": "sign-language-translator-gateway",
+  "version": "1.0.0",
+  "description": "Node.js WebSocket gateway and remote tunnel proxy for Python ASL Translation Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "localtunnel": "^2.0.2",
+    "ngrok": "^5.0.0-beta.2",
+    "ws": "^8.16.0"
+  },
+  "author": "Antigravity",
+  "license": "ISC",
+  "devDependencies": {
+    "vercel": "^54.15.0"
+  }
+}

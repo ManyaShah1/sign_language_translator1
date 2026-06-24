@@ -42,5 +42,216 @@
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
   <script src="flutter_bootstrap.js" async></script>
+  
+  <script type="module">
+    import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/vision_bundle.mjs";
+
+    let handLandmarker = null;
+    let webcamStream = null;
+    let animationFrameId = null;
+    let activeVideo = null;
+    let activeCanvas = null;
+    let onLandmarksCallback = null;
+
+    async function initLandmarker() {
+      if (handLandmarker) return handLandmarker;
+      
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
+      );
+      
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        numHands: 2,
+        minHandDetectionConfidence: 0.75,
+        minHandPresenceConfidence: 0.75,
+        minTrackingConfidence: 0.75
+      });
+      console.log("[✓] JS MediaPipe HandLandmarker initialized successfully.");
+      return handLandmarker;
+    }
+
+    window.aslWebTracker = {
+      isInitialized: () => handLandmarker !== null,
+      
+      initialize: async () => {
+        try {
+          await initLandmarker();
+          return true;
+        } catch (e) {
+          console.error("[-] Failed to initialize landmarker:", e);
+          return false;
+        }
+      },
+      
+      start: async (videoElement, canvasElement, callback) => {
+        console.log("[*] Starting web hand tracking...");
+        activeVideo = videoElement;
+        activeCanvas = canvasElement;
+        onLandmarksCallback = callback;
+        
+        await initLandmarker();
+        
+        try {
+          webcamStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: 640, height: 480, facingMode: "user" },
+            audio: false
+          });
+          activeVideo.srcObject = webcamStream;
+          activeVideo.addEventListener("loadeddata", predictLoop);
+        } catch (err) {
+          console.error("[-] Failed to open webcam for web tracking: " + err);
+          if (onLandmarksCallback) {
+            onLandmarksCallback(JSON.stringify({
+              error: "camera_access_failed",
+              message: err.message || "Could not access the camera. Make sure permissions are granted."
+            }));
+          }
+        }
+      },
+      
+      stop: () => {
+        console.log("[*] Stopping web hand tracking...");
+        if (animationFrameId) {
+          cancelAnimationFrame(animationFrameId);
+          animationFrameId = null;
+        }
+        if (webcamStream) {
+          webcamStream.getTracks().forEach(track => track.stop());
+          webcamStream = null;
+        }
+        if (activeVideo) {
+          activeVideo.srcObject = null;
+          activeVideo.removeEventListener("loadeddata", predictLoop);
+          activeVideo = null;
+        }
+        if (activeCanvas) {
+          const ctx = activeCanvas.getContext("2d");
+          ctx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+          activeCanvas = null;
+        }
+        onLandmarksCallback = null;
+      }
+    };
+
+    // Global state for EMA landmark history
+    let emaLandmarks = null;
+    const SMOOTHING_FACTOR = 0.4; // Lower values = smoother but more lag (0.3 - 0.5 is optimal)
+
+    function applyEMASmoothing(rawLandmarks) {
+      if (!rawLandmarks || rawLandmarks.length === 0) {
+        emaLandmarks = null;
+        return [];
+      }
+      
+      // Initialize EMA with the first frame if empty or size mismatch
+      if (!emaLandmarks || emaLandmarks.length !== rawLandmarks.length) {
+        emaLandmarks = rawLandmarks.map(lm => ({ x: lm.x, y: lm.y, z: lm.z }));
+        return rawLandmarks;
+      }
+      
+      // Apply smoothing formula point-by-point
+      for (let i = 0; i < rawLandmarks.length; i++) {
+        emaLandmarks[i].x = (SMOOTHING_FACTOR * rawLandmarks[i].x) + ((1 - SMOOTHING_FACTOR) * emaLandmarks[i].x);
+        emaLandmarks[i].y = (SMOOTHING_FACTOR * rawLandmarks[i].y) + ((1 - SMOOTHING_FACTOR) * emaLandmarks[i].y);
+        emaLandmarks[i].z = (SMOOTHING_FACTOR * rawLandmarks[i].z) + ((1 - SMOOTHING_FACTOR) * emaLandmarks[i].z);
+      }
+      
+      return emaLandmarks;
+    }
+
+    async function predictLoop() {
+      if (!activeVideo || !handLandmarker) return;
+      
+      if (activeVideo.videoWidth > 0 && activeVideo.videoHeight > 0) {
+        if (activeCanvas) {
+          if (activeCanvas.width !== activeVideo.videoWidth) {
+            activeCanvas.width = activeVideo.videoWidth;
+            activeCanvas.height = activeVideo.videoHeight;
+          }
+          
+          const ctx = activeCanvas.getContext("2d");
+          ctx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+          
+          ctx.save();
+          ctx.translate(activeCanvas.width, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(activeVideo, 0, 0, activeCanvas.width, activeCanvas.height);
+          ctx.restore();
+          
+          const startTimeMs = performance.now();
+          const results = handLandmarker.detectForVideo(activeVideo, startTimeMs);
+          
+          let landmarksToSend = [];
+          
+          if (results.landmarks && results.landmarks.length > 0) {
+            const landmarks = results.landmarks[0];
+            
+            drawSkeleton(ctx, landmarks, activeCanvas.width, activeCanvas.height);
+            
+            // Apply Exponential Moving Average (EMA) smoothing to reduce finger jitter
+            const smoothedLandmarks = applyEMASmoothing(landmarks);
+            
+            // Send mirrored coordinates as expected by the training dataset and orientation math
+            landmarksToSend = smoothedLandmarks.map(lm => ({
+              x: 1.0 - lm.x,
+              y: lm.y,
+              z: lm.z
+            }));
+          } else {
+            // Reset EMA history if no hands detected
+            applyEMASmoothing(null);
+          }
+          
+          if (onLandmarksCallback) {
+            onLandmarksCallback(JSON.stringify(landmarksToSend));
+          }
+        }
+      }
+      
+      animationFrameId = requestAnimationFrame(predictLoop);
+    }
+
+    function drawSkeleton(ctx, landmarks, width, height) {
+      ctx.strokeStyle = "#18b8b5";
+      ctx.lineWidth = 4;
+      ctx.fillStyle = "#ffffff";
+      
+      for (const lm of landmarks) {
+        const cx = (1.0 - lm.x) * width;
+        const cy = lm.y * height;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 5, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+      
+      const connections = [
+        [0, 1], [1, 2], [2, 3], [3, 4],
+        [0, 5], [5, 6], [6, 7], [7, 8],
+        [9, 10], [10, 11], [11, 12],
+        [13, 14], [14, 15], [15, 16],
+        [0, 17], [17, 18], [18, 19], [19, 20],
+        [5, 9], [9, 13], [13, 17]
+      ];
+      
+      for (const [i, j] of connections) {
+        const p1 = landmarks[i];
+        const p2 = landmarks[j];
+        const x1 = (1.0 - p1.x) * width;
+        const y1 = p1.y * height;
+        const x2 = (1.0 - p2.x) * width;
+        const y2 = p2.y * height;
+        
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+    }
+  </script>
 </body>
 </html>
