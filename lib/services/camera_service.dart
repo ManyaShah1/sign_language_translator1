@@ -81,34 +81,75 @@ class CameraService {
       final List<Map<String, double>> extractedPoints = [];
 
       if (hands.isNotEmpty) {
-        final Hand hand = hands.first;
         final lensDirection = controller?.description.lensDirection ?? CameraLensDirection.front;
 
-        for (final Landmark landmark in hand.landmarks) {
-          // Translate coordinate system from raw sensor space to upright screen space.
-          // 1. Shift origin to center relative [-0.5, 0.5]
-          double nx = landmark.x - 0.5;
-          double ny = landmark.y - 0.5;
-
-          // 2. Rotate by sensorOrientation degrees (convert to radians)
-          double rad = sensorOrientation * math.pi / 180.0;
-          double rx = nx * math.cos(rad) - ny * math.sin(rad);
-          double ry = nx * math.sin(rad) + ny * math.cos(rad);
-
-          // 3. Mirror the horizontal axis for the front camera to match mirrored preview
-          if (lensDirection == CameraLensDirection.front) {
-            rx = -rx;
+        List<Map<String, double>> getProcessedHand(Hand hand, CameraLensDirection lensDir) {
+          final List<Map<String, double>> processedLandmarks = [];
+          for (final Landmark landmark in hand.landmarks) {
+            double nx = landmark.x - 0.5;
+            double ny = landmark.y - 0.5;
+            double rad = sensorOrientation * math.pi / 180.0;
+            double rx = nx * math.cos(rad) - ny * math.sin(rad);
+            double ry = nx * math.sin(rad) + ny * math.cos(rad);
+            if (lensDir == CameraLensDirection.front) {
+              rx = -rx;
+            }
+            double finalX = rx + 0.5;
+            double finalY = ry + 0.5;
+            processedLandmarks.add({
+              "x": finalX,
+              "y": finalY,
+              "z": landmark.z,
+            });
           }
 
-          // 4. Shift origin back to [0.0, 1.0]
-          double finalX = rx + 0.5;
-          double finalY = ry + 0.5;
+          final List<Map<String, double>> normalized = [];
+          if (processedLandmarks.isNotEmpty) {
+            final wrist = processedLandmarks[0];
+            final double wx = wrist["x"]!;
+            final double wy = wrist["y"]!;
+            final double wz = wrist["z"]!;
+            final double layoutWidth = image.width.toDouble();
+            final double layoutHeight = image.height.toDouble();
 
-          extractedPoints.add({
-            "x": finalX,
-            "y": finalY,
-            "z": landmark.z,
-          });
+            for (final Map<String, double> lm in processedLandmarks) {
+              normalized.add({
+                "x": (lm["x"]! - wx) / layoutWidth,
+                "y": (lm["y"]! - wy) / layoutHeight,
+                "z": lm["z"]! - wz,
+              });
+            }
+          }
+          return normalized;
+        }
+
+        // 1. Add 4 dummy pose joints (shoulders, elbows)
+        for (int i = 0; i < 4; i++) {
+          extractedPoints.add({"x": 0.0, "y": 0.0, "z": 0.0});
+        }
+
+        // 2. Add Hand 1 (Left hand slot)
+        final hand1Points = getProcessedHand(hands[0], lensDirection);
+        extractedPoints.addAll(hand1Points);
+        if (hand1Points.length < 21) {
+          for (int i = hand1Points.length; i < 21; i++) {
+            extractedPoints.add({"x": 0.0, "y": 0.0, "z": 0.0});
+          }
+        }
+
+        // 3. Add Hand 2 (Right hand slot)
+        if (hands.length > 1) {
+          final hand2Points = getProcessedHand(hands[1], lensDirection);
+          extractedPoints.addAll(hand2Points);
+          if (hand2Points.length < 21) {
+            for (int i = hand2Points.length; i < 21; i++) {
+              extractedPoints.add({"x": 0.0, "y": 0.0, "z": 0.0});
+            }
+          }
+        } else {
+          for (int i = 0; i < 21; i++) {
+            extractedPoints.add({"x": 0.0, "y": 0.0, "z": 0.0});
+          }
         }
       }
 

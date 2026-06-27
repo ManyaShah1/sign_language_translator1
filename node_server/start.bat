@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0"
 title Swayam Health - Remote Gateway Server Setup
 echo ====================================================
 echo      REMOTE GATEWAY ^& INFERENCE TUNNEL SERVER       

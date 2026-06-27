@@ -44,9 +44,10 @@
   <script src="flutter_bootstrap.js" async></script>
   
   <script type="module">
-    import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/vision_bundle.mjs";
+    import { FilesetResolver, HandLandmarker, PoseLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/vision_bundle.mjs";
 
     let handLandmarker = null;
+    let poseLandmarker = null;
     let webcamStream = null;
     let animationFrameId = null;
     let activeVideo = null;
@@ -54,42 +55,59 @@
     let onLandmarksCallback = null;
 
     async function initLandmarker() {
-      if (handLandmarker) return handLandmarker;
+      if (handLandmarker && poseLandmarker) return { handLandmarker, poseLandmarker };
       
       const vision = await FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
       );
       
-      handLandmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-          delegate: "GPU"
-        },
-        runningMode: "VIDEO",
-        numHands: 2,
-        minHandDetectionConfidence: 0.75,
-        minHandPresenceConfidence: 0.75,
-        minTrackingConfidence: 0.75
-      });
-      console.log("[✓] JS MediaPipe HandLandmarker initialized successfully.");
-      return handLandmarker;
+      if (!handLandmarker) {
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          numHands: 2,
+          minHandDetectionConfidence: 0.75,
+          minHandPresenceConfidence: 0.75,
+          minTrackingConfidence: 0.75
+        });
+        console.log("[✓] JS MediaPipe HandLandmarker initialized successfully.");
+      }
+
+      if (!poseLandmarker) {
+        poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          minPoseDetectionConfidence: 0.75,
+          minPosePresenceConfidence: 0.75,
+          minTrackingConfidence: 0.75
+        });
+        console.log("[✓] JS MediaPipe PoseLandmarker initialized successfully.");
+      }
+      
+      return { handLandmarker, poseLandmarker };
     }
 
     window.aslWebTracker = {
-      isInitialized: () => handLandmarker !== null,
+      isInitialized: () => handLandmarker !== null && poseLandmarker !== null,
       
       initialize: async () => {
         try {
           await initLandmarker();
           return true;
         } catch (e) {
-          console.error("[-] Failed to initialize landmarker:", e);
+          console.error("[-] Failed to initialize landmarkers:", e);
           return false;
         }
       },
       
       start: async (videoElement, canvasElement, callback) => {
-        console.log("[*] Starting web hand tracking...");
+        console.log("[*] Starting web pose and hand tracking...");
         activeVideo = videoElement;
         activeCanvas = canvasElement;
         onLandmarksCallback = callback;
@@ -115,7 +133,7 @@
       },
       
       stop: () => {
-        console.log("[*] Stopping web hand tracking...");
+        console.log("[*] Stopping web pose and hand tracking...");
         if (animationFrameId) {
           cancelAnimationFrame(animationFrameId);
           animationFrameId = null;
@@ -138,34 +156,45 @@
       }
     };
 
-    // Global state for EMA landmark history
-    let emaLandmarks = null;
-    const SMOOTHING_FACTOR = 0.4; // Lower values = smoother but more lag (0.3 - 0.5 is optimal)
+    // Global state for EMA landmark smoothing
+    let emaLeftHand = null;
+    let emaRightHand = null;
+    let emaPose = null;
+    const SMOOTHING_FACTOR = 0.4; // EMA smoothing weight
 
-    function applyEMASmoothing(rawLandmarks) {
-      if (!rawLandmarks || rawLandmarks.length === 0) {
-        emaLandmarks = null;
-        return [];
+    function smoothPoints(rawPoints, side) {
+      if (!rawPoints || rawPoints.length === 0) {
+        if (side === "Left") emaLeftHand = null;
+        else if (side === "Right") emaRightHand = null;
+        else if (side === "Pose") emaPose = null;
+        return null;
       }
       
-      // Initialize EMA with the first frame if empty or size mismatch
-      if (!emaLandmarks || emaLandmarks.length !== rawLandmarks.length) {
-        emaLandmarks = rawLandmarks.map(lm => ({ x: lm.x, y: lm.y, z: lm.z }));
-        return rawLandmarks;
+      let ema = null;
+      if (side === "Left") ema = emaLeftHand;
+      else if (side === "Right") ema = emaRightHand;
+      else if (side === "Pose") ema = emaPose;
+
+      if (!ema || ema.length !== rawPoints.length) {
+        ema = rawPoints.map(lm => ({ x: lm.x, y: lm.y, z: lm.z }));
+      } else {
+        for (let i = 0; i < rawPoints.length; i++) {
+          if (!rawPoints[i]) continue;
+          ema[i].x = (SMOOTHING_FACTOR * rawPoints[i].x) + ((1 - SMOOTHING_FACTOR) * ema[i].x);
+          ema[i].y = (SMOOTHING_FACTOR * rawPoints[i].y) + ((1 - SMOOTHING_FACTOR) * ema[i].y);
+          ema[i].z = (SMOOTHING_FACTOR * (rawPoints[i].z || 0.0)) + ((1 - SMOOTHING_FACTOR) * (ema[i].z || 0.0));
+        }
       }
       
-      // Apply smoothing formula point-by-point
-      for (let i = 0; i < rawLandmarks.length; i++) {
-        emaLandmarks[i].x = (SMOOTHING_FACTOR * rawLandmarks[i].x) + ((1 - SMOOTHING_FACTOR) * emaLandmarks[i].x);
-        emaLandmarks[i].y = (SMOOTHING_FACTOR * rawLandmarks[i].y) + ((1 - SMOOTHING_FACTOR) * emaLandmarks[i].y);
-        emaLandmarks[i].z = (SMOOTHING_FACTOR * rawLandmarks[i].z) + ((1 - SMOOTHING_FACTOR) * emaLandmarks[i].z);
-      }
-      
-      return emaLandmarks;
+      if (side === "Left") emaLeftHand = ema;
+      else if (side === "Right") emaRightHand = ema;
+      else if (side === "Pose") emaPose = ema;
+
+      return ema;
     }
 
     async function predictLoop() {
-      if (!activeVideo || !handLandmarker) return;
+      if (!activeVideo || !handLandmarker || !poseLandmarker) return;
       
       if (activeVideo.videoWidth > 0 && activeVideo.videoHeight > 0) {
         if (activeCanvas) {
@@ -184,27 +213,103 @@
           ctx.restore();
           
           const startTimeMs = performance.now();
-          const results = handLandmarker.detectForVideo(activeVideo, startTimeMs);
+          const poseResults = poseLandmarker.detectForVideo(activeVideo, startTimeMs);
+          const handResults = handLandmarker.detectForVideo(activeVideo, startTimeMs);
           
-          let landmarksToSend = [];
+          // Construct points array: 4 pose joints + 21 left hand joints + 21 right hand joints = 46 points total (138 values)
+          let landmarksToSend = Array.from({ length: 46 }, () => ({ x: 0.0, y: 0.0, z: 0.0 }));
           
-          if (results.landmarks && results.landmarks.length > 0) {
-            const landmarks = results.landmarks[0];
+          let anchorX = 0.5;
+          let anchorY = 0.5;
+          let anchorZ = 0.0;
+          let hasPose = false;
+          
+          // 1. Process Pose Landmarks: Left Shoulder (11), Right Shoulder (12), Left Elbow (13), Right Elbow (14)
+          if (poseResults.landmarks && poseResults.landmarks.length > 0) {
+            const rawPose = poseResults.landmarks[0];
+            const smoothedPose = smoothPoints(rawPose, "Pose");
             
-            drawSkeleton(ctx, landmarks, activeCanvas.width, activeCanvas.height);
-            
-            // Apply Exponential Moving Average (EMA) smoothing to reduce finger jitter
-            const smoothedLandmarks = applyEMASmoothing(landmarks);
-            
-            // Send mirrored coordinates as expected by the training dataset and orientation math
-            landmarksToSend = smoothedLandmarks.map(lm => ({
-              x: 1.0 - lm.x,
-              y: lm.y,
-              z: lm.z
-            }));
+            if (smoothedPose && smoothedPose[11] && smoothedPose[12]) {
+              const leftShoulder = smoothedPose[11];
+              const rightShoulder = smoothedPose[12];
+              const leftElbow = smoothedPose[13] || { x: 0.0, y: 0.0, z: 0.0 };
+              const rightElbow = smoothedPose[14] || { x: 0.0, y: 0.0, z: 0.0 };
+              const leftWrist = smoothedPose[15] || { x: 0.0, y: 0.0, z: 0.0 };
+              const rightWrist = smoothedPose[16] || { x: 0.0, y: 0.0, z: 0.0 };
+              const leftHip = smoothedPose[23] || { x: 0.0, y: 0.0, z: 0.0 };
+              const rightHip = smoothedPose[24] || { x: 0.0, y: 0.0, z: 0.0 };
+              
+              // Torso midpoint global origin anchor (mirrored X)
+              anchorX = 1.0 - (leftShoulder.x + rightShoulder.x) / 2.0;
+              anchorY = (leftShoulder.y + rightShoulder.y) / 2.0;
+              anchorZ = (leftShoulder.z + rightShoulder.z) / 2.0;
+              hasPose = true;
+              
+              // Fill Pose features (indices 0 to 3) relative to anchor
+              landmarksToSend[0] = { x: (1.0 - leftShoulder.x) - anchorX, y: leftShoulder.y - anchorY, z: leftShoulder.z - anchorZ };
+              landmarksToSend[1] = { x: (1.0 - rightShoulder.x) - anchorX, y: rightShoulder.y - anchorY, z: rightShoulder.z - anchorZ };
+              landmarksToSend[2] = { x: (1.0 - leftElbow.x) - anchorX, y: leftElbow.y - anchorY, z: leftElbow.z - anchorZ };
+              landmarksToSend[3] = { x: (1.0 - rightElbow.x) - anchorX, y: rightElbow.y - anchorY, z: rightElbow.z - anchorZ };
+              
+              drawPoseSkeleton(ctx, leftShoulder, rightShoulder, leftElbow, rightElbow, leftWrist, rightWrist, leftHip, rightHip, activeCanvas.width, activeCanvas.height);
+            }
+          }
+          
+          if (!hasPose) {
+            smoothPoints(null, "Pose");
+          }
+          
+          // 2. Identify Left and Right hands from detected meshes
+          let leftHandIdx = -1;
+          let rightHandIdx = -1;
+          
+          if (handResults.landmarks && handResults.landmarks.length > 0) {
+            for (let i = 0; i < handResults.landmarks.length; i++) {
+              if (handResults.handedness[i] && handResults.handedness[i][0]) {
+                const side = handResults.handedness[i][0].categoryName;
+                if (side === "Left") {
+                  leftHandIdx = i;
+                } else if (side === "Right") {
+                  rightHandIdx = i;
+                }
+              }
+            }
+          }
+          
+          // Process Left Hand (indices 4 to 24 in output array)
+          if (leftHandIdx !== -1) {
+            const rawLeft = handResults.landmarks[leftHandIdx];
+            const smoothedLeft = smoothPoints(rawLeft, "Left");
+            if (smoothedLeft) {
+              drawSkeleton(ctx, smoothedLeft, activeCanvas.width, activeCanvas.height, "#18b8b5");
+              for (let i = 0; i < 21; i++) {
+                landmarksToSend[4 + i] = {
+                  x: (1.0 - smoothedLeft[i].x) - anchorX,
+                  y: smoothedLeft[i].y - anchorY,
+                  z: (smoothedLeft[i].z || 0.0) - anchorZ
+                };
+              }
+            }
           } else {
-            // Reset EMA history if no hands detected
-            applyEMASmoothing(null);
+            smoothPoints(null, "Left");
+          }
+          
+          // Process Right Hand (indices 25 to 45 in output array)
+          if (rightHandIdx !== -1) {
+            const rawRight = handResults.landmarks[rightHandIdx];
+            const smoothedRight = smoothPoints(rawRight, "Right");
+            if (smoothedRight) {
+              drawSkeleton(ctx, smoothedRight, activeCanvas.width, activeCanvas.height, "#e86e58");
+              for (let i = 0; i < 21; i++) {
+                landmarksToSend[25 + i] = {
+                  x: (1.0 - smoothedRight[i].x) - anchorX,
+                  y: smoothedRight[i].y - anchorY,
+                  z: (smoothedRight[i].z || 0.0) - anchorZ
+                };
+              }
+            }
+          } else {
+            smoothPoints(null, "Right");
           }
           
           if (onLandmarksCallback) {
@@ -216,8 +321,59 @@
       animationFrameId = requestAnimationFrame(predictLoop);
     }
 
-    function drawSkeleton(ctx, landmarks, width, height) {
-      ctx.strokeStyle = "#18b8b5";
+    function drawPoseSkeleton(ctx, leftShoulder, rightShoulder, leftElbow, rightElbow, leftWrist, rightWrist, leftHip, rightHip, width, height) {
+      ctx.strokeStyle = "#e1b12c";
+      ctx.lineWidth = 6;
+      ctx.fillStyle = "#ffffff";
+      
+      const joints = [leftShoulder, rightShoulder, leftElbow, rightElbow, leftWrist, rightWrist, leftHip, rightHip];
+      for (const joint of joints) {
+        if (!joint) continue;
+        const cx = (1.0 - joint.x) * width;
+        const cy = joint.y * height;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 7, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+      
+      ctx.beginPath();
+      // Shoulder-to-shoulder connection (11 to 12)
+      ctx.moveTo((1.0 - leftShoulder.x) * width, leftShoulder.y * height);
+      ctx.lineTo((1.0 - rightShoulder.x) * width, rightShoulder.y * height);
+      
+      // Left arm connection (11 to 13)
+      ctx.moveTo((1.0 - leftShoulder.x) * width, leftShoulder.y * height);
+      ctx.lineTo((1.0 - leftElbow.x) * width, leftElbow.y * height);
+      
+      // Right arm connection (12 to 14)
+      ctx.moveTo((1.0 - rightShoulder.x) * width, rightShoulder.y * height);
+      ctx.lineTo((1.0 - rightElbow.x) * width, rightElbow.y * height);
+      
+      // Left elbow to left wrist connection (13 to 15)
+      ctx.moveTo((1.0 - leftElbow.x) * width, leftElbow.y * height);
+      ctx.lineTo((1.0 - leftWrist.x) * width, leftWrist.y * height);
+      
+      // Right elbow to right wrist connection (14 to 16)
+      ctx.moveTo((1.0 - rightElbow.x) * width, rightElbow.y * height);
+      ctx.lineTo((1.0 - rightWrist.x) * width, rightWrist.y * height);
+      
+      // Left shoulder to left hip connection (11 to 23)
+      ctx.moveTo((1.0 - leftShoulder.x) * width, leftShoulder.y * height);
+      ctx.lineTo((1.0 - leftHip.x) * width, leftHip.y * height);
+      
+      // Right shoulder to right hip connection (12 to 24)
+      ctx.moveTo((1.0 - rightShoulder.x) * width, rightShoulder.y * height);
+      ctx.lineTo((1.0 - rightHip.x) * width, rightHip.y * height);
+      
+      // Left hip to right hip connection (23 to 24)
+      ctx.moveTo((1.0 - leftHip.x) * width, leftHip.y * height);
+      ctx.lineTo((1.0 - rightHip.x) * width, rightHip.y * height);
+      
+      ctx.stroke();
+    }
+
+    function drawSkeleton(ctx, landmarks, width, height, color) {
+      ctx.strokeStyle = color;
       ctx.lineWidth = 4;
       ctx.fillStyle = "#ffffff";
       

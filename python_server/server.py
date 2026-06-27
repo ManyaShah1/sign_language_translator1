@@ -52,17 +52,17 @@ tflite_interpreter = None
 try:
     import ai_edge_litert.interpreter as litert
     tflite_interpreter = litert.Interpreter
-    print("[✓] Successfully loaded ai_edge_litert (LiteRT) interpreter.")
+    print("[OK] Successfully loaded ai_edge_litert (LiteRT) interpreter.")
 except ImportError:
     try:
         import tflite_runtime.interpreter as tflite
         tflite_interpreter = tflite.Interpreter
-        print("[✓] Successfully loaded tflite_runtime interpreter.")
+        print("[OK] Successfully loaded tflite_runtime interpreter.")
     except ImportError:
         try:
             import tensorflow as tf
             tflite_interpreter = tf.lite.Interpreter
-            print("[✓] Successfully loaded tensorflow.lite interpreter.")
+            print("[OK] Successfully loaded tensorflow.lite interpreter.")
         except ImportError:
             print("[!] Warning: Neither ai_edge_litert, tflite_runtime, nor tensorflow are available.")
 
@@ -114,6 +114,11 @@ class RealTimeASLTranslationEngine:
         self.clf = None
         self.load_dataset_counts()
         self.load_model()
+        self.sequence_model_path = 'asl_sentence_model.h5'
+        self.sequence_model = None
+        self.sequence_classes = []
+        self.vocabulary = {}
+        self.load_sequence_model()
 
     def edit_distance(self, s1, s2):
         """Standard Levenshtein distance algorithm (zero external dependencies)."""
@@ -163,7 +168,7 @@ class RealTimeASLTranslationEngine:
                 with open(resolved_pkl, 'rb') as f:
                     self.clf = pickle.load(f)
                 self.use_pickle = True
-                print(f"[✓] Successfully loaded custom scikit-learn model: '{resolved_pkl}'")
+                print(f"[OK] Successfully loaded custom scikit-learn model: '{resolved_pkl}'")
                 return
             except Exception as e:
                 print(f"[-] Error loading custom pickle model: {e}")
@@ -189,7 +194,7 @@ class RealTimeASLTranslationEngine:
                             label = parts[-1]
                             if label in self.label_counts:
                                 self.label_counts[label] += 1
-                print(f"[✓] Loaded dataset counts from '{resolved_csv}'. Total samples: {sum(self.label_counts.values())}")
+                print(f"[OK] Loaded dataset counts from '{resolved_csv}'. Total samples: {sum(self.label_counts.values())}")
             except Exception as e:
                 print(f"[-] Error reading dataset counts: {e}")
 
@@ -502,6 +507,152 @@ class RealTimeASLTranslationEngine:
             "status": f"Detected: {predicted_char}" if confidence >= 0.60 else "Analyzing..."
         }
 
+    def load_sequence_model(self):
+        resolved_path = self.sequence_model_path
+        if not os.path.exists(resolved_path) and os.path.exists(os.path.join('python_server', resolved_path)):
+            resolved_path = os.path.join('python_server', resolved_path)
+            
+        if os.path.exists(resolved_path):
+            try:
+                from tensorflow.keras.models import load_model
+                self.sequence_model = load_model(resolved_path)
+                print(f"[OK] Successfully loaded sequence model: '{resolved_path}'")
+                
+                # Load vocabulary
+                vocab_path = 'vocabulary.json'
+                if not os.path.exists(vocab_path) and os.path.exists(os.path.join('python_server', vocab_path)):
+                    vocab_path = os.path.join('python_server', vocab_path)
+                if os.path.exists(vocab_path):
+                    with open(vocab_path, 'r') as f:
+                        self.vocabulary = json.load(f)
+                    print(f"[OK] Loaded vocabulary dictionary: {self.vocabulary}")
+                else:
+                    self.vocabulary = {}
+                    
+                # Register classes from data directory
+                data_dir = 'data_sequences'
+                if not os.path.exists(data_dir) and os.path.exists(os.path.join('python_server', data_dir)):
+                    data_dir = os.path.join('python_server', data_dir)
+                if os.path.exists(data_dir):
+                    self.sequence_classes = sorted([d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d))])
+                else:
+                    self.sequence_classes = [
+                        "BLOOD_PRESSURE", "CHECK", "CHECKUP", "CHEST", "CONNECT", 
+                        "DIZZY", "DOCTOR", "HELLO", "ONLINE", "PAIN", 
+                        "PRINT", "REPORT", "SEVERE", "START", "WEAK"
+                    ]
+                print(f"[OK] Registered {len(self.sequence_classes)} sequence classes: {self.sequence_classes}")
+            except Exception as e:
+                print(f"[-] Error loading sequence model: {e}")
+        else:
+            print(f"[!] Warning: Sequence model not found at '{resolved_path}'")
+
+    def forward_fill_sequence(self, sequence):
+        """
+        Fills missing coordinate tracking dropouts (represented as zero sub-vectors) 
+        using forward-fill (and back-fill for initial empty frames).
+        """
+        L = len(sequence)
+        filled = sequence.copy()
+        groups = [
+            ("pose", 0, 12),
+            ("left_hand", 12, 75),
+            ("right_hand", 75, 138)
+        ]
+        
+        for name, start, end in groups:
+            first_valid_idx = -1
+            for i in range(L):
+                if np.any(np.abs(filled[i, start:end]) > 1e-5):
+                    first_valid_idx = i
+                    break
+                    
+            if first_valid_idx == -1:
+                continue
+                
+            for i in range(first_valid_idx):
+                filled[i, start:end] = filled[first_valid_idx, start:end]
+                
+            last_valid = filled[first_valid_idx, start:end].copy()
+            for i in range(first_valid_idx + 1, L):
+                if np.any(np.abs(filled[i, start:end]) > 1e-5):
+                    last_valid = filled[i, start:end].copy()
+                else:
+                    filled[i, start:end] = last_valid
+                    
+        return filled
+
+    def transform_to_relative_skeleton(self, filled_sequence):
+        """
+        Applies torso origin subtraction and converts absolute positions into relative direction vectors.
+        """
+        L = len(filled_sequence)
+        transformed = np.zeros_like(filled_sequence)
+        
+        for f in range(L):
+            frame = filled_sequence[f]
+            s_l = frame[0:3]
+            s_r = frame[3:6]
+            e_l = frame[6:9]
+            e_r = frame[9:12]
+            
+            s_mid = (s_l + s_r) / 2.0
+            transformed[f, 0:3] = s_l - s_mid
+            transformed[f, 3:6] = s_r - s_mid
+            transformed[f, 6:9] = e_l - s_l
+            transformed[f, 9:12] = e_r - s_r
+            
+            left_hand_valid = np.any(np.abs(frame[12:75]) > 1e-5)
+            if left_hand_valid:
+                w_l = frame[12:15]
+                transformed[f, 12:15] = w_l - e_l
+                for i in range(1, 21):
+                    idx = 12 + i * 3
+                    transformed[f, idx : idx + 3] = frame[idx : idx + 3] - w_l
+            else:
+                transformed[f, 12:75] = 0.0
+                
+            right_hand_valid = np.any(np.abs(frame[75:138]) > 1e-5)
+            if right_hand_valid:
+                w_r = frame[75:78]
+                transformed[f, 75:78] = w_r - e_r
+                for i in range(1, 21):
+                    idx = 75 + i * 3
+                    transformed[f, idx : idx + 3] = frame[idx : idx + 3] - w_r
+            else:
+                transformed[f, 75:138] = 0.0
+                
+        return transformed
+
+    def predict_word_sequence(self, sequence):
+        """Runs LSTM model inference on a 45-frame coordinate sequence with normalization."""
+        if self.sequence_model is None:
+            return None
+            
+        try:
+            # Apply normalisation pipeline to align with training data format
+            raw_arr = np.array(sequence, dtype=np.float32)
+            filled = self.forward_fill_sequence(raw_arr)
+            normalized = self.transform_to_relative_skeleton(filled)
+            
+            input_data = np.array([normalized], dtype=np.float32) # shape: (1, 45, 138)
+            prediction_probs = self.sequence_model.predict(input_data, verbose=0)[0]
+            
+            best_class_idx = np.argmax(prediction_probs)
+            confidence = float(prediction_probs[best_class_idx])
+            predicted_word = self.sequence_classes[best_class_idx]
+            
+            # Use confidence threshold of 0.70 to avoid false positives
+            if confidence >= 0.70:
+                return {
+                    "word": predicted_word,
+                    "confidence": confidence
+                }
+        except Exception as e:
+            print(f"[-] Sequence model prediction failed: {e}")
+            
+        return None
+
 
 # Instantiate global engine to preserve model memory across connects
 global_engine = RealTimeASLTranslationEngine()
@@ -510,7 +661,7 @@ async def handle_connection(websocket, path=None):
     client_ip = websocket.remote_address[0]
     print(f"\n[+] Active diagnostic link established from client: {client_ip}")
     
-    # Reset spelling states on new connections
+    # Reset spelling and word states on new connections
     global_engine.spelled_text = ""
     global_engine.last_appended_char = None
     global_engine.current_stable_char = None
@@ -518,6 +669,30 @@ async def handle_connection(websocket, path=None):
     global_engine.no_hand_frame_count = 0
     global_engine.last_wrist_pos = None
     
+    sequence_buffer = []
+    word_predictions = []
+    hand_absence_task = None
+    current_mode = "spelling"
+    consecutive_absence_frames = 0
+    
+    async def reset_session_after_timeout():
+        nonlocal word_predictions
+        await asyncio.sleep(8.0)
+        word_predictions.clear()
+        global_engine.spelled_text = ""
+        sequence_buffer.clear()
+        print("[*] 8.0s Hand absence timeout triggered. Resetting session.")
+        try:
+            await websocket.send(json.dumps({
+                "type": "translation_result",
+                "translation": "",
+                "kiosk_feedback": "",
+                "confidence": 1.0,
+                "status": "Session Reset (8.0s hand absence)"
+            }))
+        except Exception as e:
+            print(f"[-] Failed to send timeout reset message: {e}")
+
     frame_count = 0
 
     try:
@@ -538,7 +713,12 @@ async def handle_connection(websocket, path=None):
                 global_engine.last_appended_char = None
                 global_engine.current_stable_char = None
                 global_engine.stable_frame_count = 0
-                print("[*] Engine spelling buffer cleared.")
+                word_predictions.clear()
+                sequence_buffer.clear()
+                if hand_absence_task is not None and not hand_absence_task.done():
+                    hand_absence_task.cancel()
+                    hand_absence_task = None
+                print("[*] Engine translation buffers cleared.")
                 
                 await websocket.send(json.dumps({
                     "type": "translation_result",
@@ -550,16 +730,28 @@ async def handle_connection(websocket, path=None):
                 }))
 
             elif msg_type == "backspace":
-                if global_engine.spelled_text:
-                    global_engine.spelled_text = global_engine.spelled_text[:-1]
-                global_engine.last_appended_char = None
-                global_engine.current_stable_char = None
-                global_engine.stable_frame_count = 0
-                print("[*] Engine spelling buffer backspaced.")
+                if current_mode == "word":
+                    if word_predictions:
+                        word_predictions.pop()
+                    translation = " ".join(word_predictions)
+                    feedback = global_engine.vocabulary.get(translation.upper().strip(), "")
+                    display_text = feedback if feedback else translation
+                else:
+                    if global_engine.spelled_text:
+                        global_engine.spelled_text = global_engine.spelled_text[:-1]
+                    global_engine.last_appended_char = None
+                    global_engine.current_stable_char = None
+                    global_engine.stable_frame_count = 0
+                    translation = global_engine.spelled_text
+                    display_text = translation
+                    feedback = ""
+                
+                print(f"[*] Engine translation buffers backspaced. Mode: {current_mode}")
                 
                 await websocket.send(json.dumps({
                     "type": "translation_result",
-                    "translation": global_engine.spelled_text,
+                    "translation": display_text,
+                    "kiosk_feedback": feedback,
                     "confidence": 1.0,
                     "status": "Idle",
                     "velocity": 0.0,
@@ -610,7 +802,7 @@ async def handle_connection(websocket, path=None):
                         "accuracy": accuracy,
                         "total_samples": total_samples
                     }))
-                    print(f"[✓] Custom classifier trained successfully. Accuracy: {accuracy:.4f} on {total_samples} samples.")
+                    print(f"[OK] Custom classifier trained successfully. Accuracy: {accuracy:.4f} on {total_samples} samples.")
                 except Exception as ex:
                     print(f"[-] Training failed: {ex}")
                     await websocket.send(json.dumps({
@@ -634,7 +826,7 @@ async def handle_connection(websocket, path=None):
                         "type": "delete_custom_model_completed",
                         "status": "success"
                     }))
-                    print("[✓] Custom model deleted and fallback to TFLite completed.")
+                    print("[OK] Custom model deleted and fallback to TFLite completed.")
                 except Exception as ex:
                     print(f"[-] Error deleting custom model: {ex}")
                     await websocket.send(json.dumps({
@@ -646,27 +838,150 @@ async def handle_connection(websocket, path=None):
             elif msg_type == "coordinates":
                 frame_count += 1
                 landmarks = payload.get("landmarks", [])
+                mode = payload.get("mode", "spelling")
+                current_mode = mode
                 
-                # Process landmarks via neural translation engine
-                result = global_engine.process_frame(landmarks)
-                
-                # Periodically display telemetry statistics in the host console
-                if frame_count % 30 == 0:
-                    print(f"[*] Frames parsed: {frame_count} | Spelled Text: '{global_engine.spelled_text}' | Status: {result['status']}")
+                if mode == "word":
+                    # Process Word Mode sequence
+                    # Hand activity detection
+                    left_active = False
+                    right_active = False
+                    if landmarks and len(landmarks) == 46:
+                        left_hand = landmarks[4:25]
+                        right_hand = landmarks[25:46]
+                        left_active = any(abs(lm.get('x', 0.0)) > 1e-5 or abs(lm.get('y', 0.0)) > 1e-5 for lm in left_hand)
+                        right_active = any(abs(lm.get('x', 0.0)) > 1e-5 or abs(lm.get('y', 0.0)) > 1e-5 for lm in right_hand)
+                        
+                    is_absent = not (left_active or right_active)
+                    
+                    if not landmarks or len(landmarks) != 46 or is_absent:
+                        # Hand absent
+                        consecutive_absence_frames += 1
+                        if consecutive_absence_frames > 20:
+                            sequence_buffer.clear()
+                            
+                        # If there is no hand absence task already running, start one
+                        if hand_absence_task is None or hand_absence_task.done():
+                            hand_absence_task = asyncio.create_task(reset_session_after_timeout())
+                        
+                        translation = " ".join(word_predictions)
+                        feedback = global_engine.vocabulary.get(translation.upper().strip(), "")
+                        
+                        # When done signing (hand is absent), display the full sentence from vocabulary.json if available
+                        display_text = feedback if feedback else translation
+                        
+                        await websocket.send(json.dumps({
+                            "type": "translation_result",
+                            "translation": display_text,
+                            "kiosk_feedback": feedback,
+                            "confidence": 1.0,
+                            "status": f"Word Mode - Hand Absent ({consecutive_absence_frames})",
+                            "timestamp": payload.get("timestamp", 0)
+                        }))
+                    else:
+                        # Hand present
+                        consecutive_absence_frames = 0
+                        if hand_absence_task is not None and not hand_absence_task.done():
+                            hand_absence_task.cancel()
+                            hand_absence_task = None
+                            print("[*] Hand re-detected: cancelled absence timer.")
+                            
+                        # Extract the 138 elements from the 46 landmarks
+                        frame_coords = []
+                        for lm in landmarks:
+                            frame_coords.extend([lm.get('x', 0.0), lm.get('y', 0.0), lm.get('z', 0.0)])
+                            
+                        # Append to sliding queue
+                        sequence_buffer.append(frame_coords)
+                        if len(sequence_buffer) > 45:
+                            sequence_buffer.pop(0)
+                            
+                        # If sequence buffer is full (45 frames), run inference
+                        if len(sequence_buffer) == 45:
+                            result = global_engine.predict_word_sequence(sequence_buffer)
+                            if result:
+                                predicted_word = result["word"]
+                                confidence = result["confidence"]
+                                
+                                # Aggregate predicted words (avoid spamming duplicates consecutively)
+                                if not word_predictions or word_predictions[-1] != predicted_word:
+                                    word_predictions.append(predicted_word)
+                                    print(f"[OK] Word Mode: Appended word '{predicted_word}' (confidence: {confidence:.2f})")
+                                    # Clear queue after positive match to prevent duplicate triggers
+                                    sequence_buffer.clear()
+                                    
+                                translation = " ".join(word_predictions)
+                                feedback = global_engine.vocabulary.get(translation.upper().strip(), "")
+                                
+                                await websocket.send(json.dumps({
+                                    "type": "translation_result",
+                                    "translation": translation,
+                                    "kiosk_feedback": feedback,
+                                    "confidence": confidence,
+                                    "status": f"Word Mode - Predicted: {predicted_word}",
+                                    "timestamp": payload.get("timestamp", 0)
+                                }))
+                            else:
+                                translation = " ".join(word_predictions)
+                                feedback = global_engine.vocabulary.get(translation.upper().strip(), "")
+                                await websocket.send(json.dumps({
+                                    "type": "translation_result",
+                                    "translation": translation,
+                                    "kiosk_feedback": feedback,
+                                    "confidence": 0.0,
+                                    "status": "Word Mode - Analyzing...",
+                                    "timestamp": payload.get("timestamp", 0)
+                                }))
+                        else:
+                            translation = " ".join(word_predictions)
+                            feedback = global_engine.vocabulary.get(translation.upper().strip(), "")
+                            await websocket.send(json.dumps({
+                                "type": "translation_result",
+                                "translation": translation,
+                                "kiosk_feedback": feedback,
+                                "confidence": 0.0,
+                                "status": f"Word Mode - Buffering ({len(sequence_buffer)}/45)",
+                                "timestamp": payload.get("timestamp", 0)
+                            }))
+                else:
+                    # spelling mode
+                    # Extract active hand landmarks for spelling engine (needs 21 landmarks)
+                    hand_landmarks = []
+                    if len(landmarks) == 46:
+                        left_hand = landmarks[4:25]
+                        right_hand = landmarks[25:46]
+                        left_active = any(abs(lm.get('x', 0.0)) > 1e-5 or abs(lm.get('y', 0.0)) > 1e-5 for lm in left_hand)
+                        right_active = any(abs(lm.get('x', 0.0)) > 1e-5 or abs(lm.get('y', 0.0)) > 1e-5 for lm in right_hand)
+                        
+                        if left_active:
+                            hand_landmarks = left_hand
+                        elif right_active:
+                            hand_landmarks = right_hand
+                    else:
+                        hand_landmarks = landmarks
+                        
+                    result = global_engine.process_frame(hand_landmarks)
+                    
+                    # Periodically display telemetry statistics in the host console
+                    if frame_count % 30 == 0:
+                        print(f"[*] Frames parsed: {frame_count} | Spelled Text: '{global_engine.spelled_text}' | Status: {result['status']}")
 
-                if result:
-                    await websocket.send(json.dumps({
-                        "type": "translation_result",
-                        "translation": result["translation"],
-                        "confidence": result["confidence"],
-                        "status": result["status"],
-                        "velocity": result["velocity"],
-                        "timestamp": payload.get("timestamp", 0)
-                    }))
+                    if result:
+                        await websocket.send(json.dumps({
+                            "type": "translation_result",
+                            "translation": result["translation"],
+                            "kiosk_feedback": "",
+                            "confidence": result["confidence"],
+                            "status": result["status"],
+                            "velocity": result["velocity"],
+                            "timestamp": payload.get("timestamp", 0)
+                        }))
 
     except Exception as e:
         print(f"[-] Session disruption logged for client {client_ip}: {e}")
     finally:
+        if hand_absence_task is not None and not hand_absence_task.done():
+            hand_absence_task.cancel()
         print(f"[-] Client connection closed safely: {client_ip}")
 
 

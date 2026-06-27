@@ -33,6 +33,10 @@ const PYTHON_PORT = 8768; // Port of the Python inference server
 
 // 1. Find Python executable
 function getPythonExecutable() {
+    const portablePath = path.join(__dirname, '..', 'python_server', 'portable_python', 'python.exe');
+    if (fs.existsSync(portablePath)) {
+        return portablePath;
+    }
     const customPath = 'C:\\Users\\tofik\\AppData\\Local\\Python\\bin\\python.exe';
     if (fs.existsSync(customPath)) {
         return customPath;

@@ -32,6 +32,7 @@ class _TranslatorTabState extends State<TranslatorTab> {
 
   List<Map<String, double>> _simulatedHandPoints = [];
   final List<String> _translationHistory = [];
+  String _activeTranslationMode = "spelling";
 
   Timer? _fpsTimer;
   bool _isStreaming = false;
@@ -105,10 +106,11 @@ class _TranslatorTabState extends State<TranslatorTab> {
           _simulatedHandPoints = points;
         });
 
-        if (points.isNotEmpty && _webSocketService.isConnected) {
+        if (_webSocketService.isConnected) {
           final int packetId = DateTime.now().millisecondsSinceEpoch;
           final payload = {
             "type": "coordinates",
+            "mode": _activeTranslationMode,
             "timestamp": packetId,
             "landmarks": points,
           };
@@ -158,14 +160,14 @@ class _TranslatorTabState extends State<TranslatorTab> {
                 ? Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(flex: 5, child: CameraViewport(cameraService: _cameraService, simulatedPoints: _simulatedHandPoints, fps: _fps, packetsSent: _webSocketService.packetsSent, isConnected: _webSocketService.isConnected, onWebLandmarks: _handleWebLandmarks)),
+                Expanded(flex: 5, child: CameraViewport(cameraService: _cameraService, simulatedPoints: _simulatedHandPoints, fps: _fps, packetsSent: _webSocketService.packetsSent, isConnected: _webSocketService.isConnected, onWebLandmarks: _handleWebLandmarks, activeMode: _activeTranslationMode, onModeChanged: (mode) => setState(() => _activeTranslationMode = mode))),
                 const SizedBox(width: 24),
                 Expanded(flex: 4, child: TranslationPanel(currentTranslation: _currentTranslation, confidence: _confidence, status: _translationStatus, history: _translationHistory, latency: _webSocketService.serverLatency, fps: _fps, packetsSent: _webSocketService.packetsSent, packetsRecv: _webSocketService.packetsReceived, velocity: _velocity, onClear: _clearTranslationBuffer, onBackspace: _backspaceTranslationBuffer, onSpace: _spaceTranslationBuffer)),
               ],
             )
                 : Column(
               children: [
-                CameraViewport(cameraService: _cameraService, simulatedPoints: _simulatedHandPoints, fps: _fps, packetsSent: _webSocketService.packetsSent, isConnected: _webSocketService.isConnected, onWebLandmarks: _handleWebLandmarks),
+                CameraViewport(cameraService: _cameraService, simulatedPoints: _simulatedHandPoints, fps: _fps, packetsSent: _webSocketService.packetsSent, isConnected: _webSocketService.isConnected, onWebLandmarks: _handleWebLandmarks, activeMode: _activeTranslationMode, onModeChanged: (mode) => setState(() => _activeTranslationMode = mode)),
                 const SizedBox(height: 24),
                 TranslationPanel(currentTranslation: _currentTranslation, confidence: _confidence, status: _translationStatus, history: _translationHistory, latency: _webSocketService.serverLatency, fps: _fps, packetsSent: _webSocketService.packetsSent, packetsRecv: _webSocketService.packetsReceived, velocity: _velocity, onClear: _clearTranslationBuffer, onBackspace: _backspaceTranslationBuffer, onSpace: _spaceTranslationBuffer),
               ],
@@ -331,10 +333,11 @@ class _TranslatorTabState extends State<TranslatorTab> {
         _fpsCount++;
       });
 
-      if (points.isNotEmpty && _webSocketService.isConnected) {
+      if (_webSocketService.isConnected) {
         final int packetId = DateTime.now().millisecondsSinceEpoch;
         final payload = {
           "type": "coordinates",
+          "mode": _activeTranslationMode,
           "timestamp": packetId,
           "landmarks": points,
         };

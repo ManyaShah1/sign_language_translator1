@@ -60,6 +60,18 @@ python_server/__pycache__/
 *.pkl
 *.tflite
 *.task
+*.h5
+
+# Datasets and Chrome Profiles
+/data/
+python_server/data_sequences/
+python_server/chrome_profile/
+python_server/temp_downloaded_video.mp4
+python_server/vocabulary_videos.txt
+
+# Executables and logs
+opencode.exe
+analysis_output.txt
 
 # Environment variables
 .env
